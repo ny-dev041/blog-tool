@@ -52,6 +52,7 @@ let currentCompany = null;         // 현재 선택된 업체(객체, companies 
 let suggestMatches = [];           // 지금 검색창 아래 떠 있는 추천 업체 목록 (방향키 이동용)
 let suggestIndex = -1;             // 방향키로 지금 몇 번째 추천이 하이라이트됐는지 (-1이면 없음)
 let hasGeneratedRequest = false;   // [요청서 생성]으로 실제 결과물이 만들어진 상태인지 (placeholder 문구는 복사 대상 아님)
+let hasUnexportedChanges = false;  // [+ 업체 추가]로 새 업체를 저장했는데 아직 [JSON 내보내기]로 백업 안 한 상태인지
 
 const 결과창_안내문구 = "[요청서 생성]을 누르면 여기에 완성된 요청서가 표시됩니다.";
 const 결과창_안내문구_초기 = "업체를 선택하고 [요청서 생성]을 누르면 여기에 완성된 요청서가 표시됩니다.";
@@ -335,8 +336,21 @@ function updateKeywordValidation() {
   const keyword = el.newKeywordInput.value.trim();
   const duplicate = isKeywordDuplicate(currentCompany, keyword);
   el.newKeywordInput.classList.toggle("invalid", duplicate);
-  el.newKeywordWarning.style.display = duplicate ? "block" : "none";
+  if (duplicate) {
+    el.newKeywordWarning.textContent = "이전 키워드와 같아요. 다른 키워드를 입력해주세요.";
+    el.newKeywordWarning.style.display = "block";
+  } else {
+    el.newKeywordWarning.style.display = "none";
+  }
   return duplicate;
+}
+
+// [요청서 생성]을 눌렀는데 새 키워드가 비어있을 때만 쓰는 경고 (입력하는 즉시 사라짐 —
+// 위 updateKeywordValidation이 매 입력마다 다시 검사해서 값이 생기면 자동으로 감춰줌)
+function showKeywordEmptyWarning() {
+  el.newKeywordInput.classList.add("invalid");
+  el.newKeywordWarning.textContent = "새 키워드를 입력해주세요.";
+  el.newKeywordWarning.style.display = "block";
 }
 
 // ---------- 요청서 생성 ----------
@@ -357,6 +371,15 @@ function buildRequestText({ prevTopic, keyword, companyName, survey, extra }) {
 function generateRequest() {
   if (!currentCompany) return;
 
+  const keyword = el.newKeywordInput.value.trim();
+
+  // 새 키워드를 안 넣었으면 생성을 막음
+  if (!keyword) {
+    showKeywordEmptyWarning();
+    el.newKeywordInput.focus();
+    return;
+  }
+
   // 새 키워드가 이전 키워드와 같으면 생성을 막음 (로그인 실패처럼 진행 자체가 안 되도록)
   if (updateKeywordValidation()) {
     el.newKeywordInput.focus();
@@ -366,7 +389,6 @@ function generateRequest() {
   const prevTopic = el.prevTopicInput.value.trim();
   const survey = el.surveyInput.value.trim();
   const extra = el.extraInput.value.trim();
-  const keyword = el.newKeywordInput.value.trim();
 
   const text = buildRequestText({
     prevTopic,
@@ -448,6 +470,7 @@ function saveNewCompany() {
   };
   companies.push(newCompany);
   saveCompanies(companies);
+  hasUnexportedChanges = true; // JSON 백업을 아직 안 했다는 표시 (내보내기 하면 꺼짐)
 
   closeAddCompanyModal();
   el.searchInput.value = name;
@@ -588,6 +611,8 @@ function exportJSON() {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+
+  hasUnexportedChanges = false; // 방금 백업했으니 표시 해제
 }
 
 function importJSONFile(file) {
@@ -622,6 +647,17 @@ function importJSONFile(file) {
 }
 
 // ---------- 이벤트 연결 ----------
+
+// 새 업체를 추가해놓고 JSON 백업(내보내기)을 아직 안 한 채로 창을 닫으려 하면 브라우저가 한 번 물어보게 함.
+// (브라우저 정책상 문구는 커스터마이징 안 되고 "변경사항을 저장하지 않았을 수 있습니다" 같은
+// 브라우저 기본 문구가 뜸 — 그래도 실수로 닫는 건 막아줌)
+window.addEventListener("beforeunload", (e) => {
+  if (hasUnexportedChanges) {
+    e.preventDefault();
+    e.returnValue = "";
+  }
+});
+
 el.searchInput.addEventListener("input", (e) => renderSuggestions(e.target.value));
 el.searchInput.addEventListener("focus", (e) => {
   if (e.target.value.trim()) renderSuggestions(e.target.value);
@@ -638,9 +674,15 @@ el.searchInput.addEventListener("keydown", (e) => {
     e.preventDefault();
     moveSuggestHighlight(-1);
   } else if (e.key === "Enter") {
-    if (suggestIndex >= 0 && suggestMatches[suggestIndex]) {
+    const picked =
+      (suggestIndex >= 0 && suggestMatches[suggestIndex]) ||
+      (suggestMatches.length === 1 ? suggestMatches[0] : null);
+    if (picked) {
       e.preventDefault();
-      pickSuggestion(suggestMatches[suggestIndex]);
+      // 한글 입력 중(조합 미확정) 엔터를 누르면, 브라우저가 조합을 확정하면서
+      // 마지막 글자를 검색창 끝에 다시 덧붙이는 경우가 있음(예: "비"+업체명 → "업체명비").
+      // 그 조합 확정이 끝난 다음에 업체명으로 완전히 덮어쓰도록 한 박자 늦춰서 처리.
+      setTimeout(() => pickSuggestion(picked), 0);
     }
   } else if (e.key === "Escape") {
     hideSuggestions();
